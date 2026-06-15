@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "omnitool"
+version = "0.1.0"
+description = "Omnitool that provides wide range of functionality for day to day use."
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "typer>=0.9",
+]
+
+[project.scripts]
+omni = "omnitool.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
