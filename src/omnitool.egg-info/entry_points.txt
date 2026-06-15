@@ -1,2 +1,0 @@
-[console_scripts]
-omni = omnitool.cli:app
