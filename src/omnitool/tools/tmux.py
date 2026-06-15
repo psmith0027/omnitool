@@ -51,26 +51,40 @@ def _get_descendant_pids(pid: int) -> list[int]:
 @app.command(name="kill-all")
 def kill_all():
     """Kill all tmux sessions, forcefully terminating every pane process."""
-    result = _tmux("list-panes", "-a", "-F", "#{pane_pid}")
+    my_pid = os.getpid()
+
+    current_result = _tmux("display-message", "-p", "#{pane_id}")
+    current_pane = current_result.stdout.strip() if current_result.returncode == 0 else None
+
+    result = _tmux("list-panes", "-a", "-F", "#{pane_id}:#{pane_pid}")
     if result.returncode == 0 and result.stdout.strip():
         killed: set[int] = set()
-        for pid_str in result.stdout.strip().split("\n"):
-            pid_str = pid_str.strip()
-            if not pid_str:
+        for line in result.stdout.strip().split("\n"):
+            line = line.strip()
+            if not line or ":" not in line:
                 continue
+            pane_id, pid_str = line.split(":", 1)
             try:
                 pid = int(pid_str)
             except ValueError:
                 continue
 
-            descendants = _get_descendant_pids(pid)
-            for p in descendants + [pid]:
-                if p not in killed:
+            # Hard-kill all descendant processes (editors, servers, builds, etc.)
+            for p in _get_descendant_pids(pid):
+                if p != my_pid and p not in killed:
                     try:
                         os.kill(p, signal.SIGKILL)
                         killed.add(p)
                     except ProcessLookupError:
                         pass
+
+            # Hard-kill the pane process itself, unless it's our own pane
+            if pane_id != current_pane and pid not in killed:
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                    killed.add(pid)
+                except ProcessLookupError:
+                    pass
 
     result = _tmux("kill-server")
     if result.returncode == 0:
