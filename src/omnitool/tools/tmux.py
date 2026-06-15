@@ -1,4 +1,5 @@
 import os
+import platform
 import signal
 import subprocess
 from typing import Optional
@@ -17,6 +18,30 @@ def main(ctx: typer.Context):
 
 def _tmux(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["tmux", *args], capture_output=True, text=True)
+
+
+def _copy_to_clipboard(text: str) -> bool:
+    system = platform.system()
+    try:
+        if system == "Darwin":
+            proc = subprocess.run(["pbcopy"], input=text, text=True)
+        elif system == "Linux":
+            for cmd in ["xclip", "xsel"]:
+                try:
+                    proc = subprocess.run(
+                        [cmd, "-selection", "clipboard"] if cmd == "xclip" else [cmd, "--clipboard", "--input"],
+                        input=text, text=True
+                    )
+                    break
+                except FileNotFoundError:
+                    continue
+            else:
+                return False
+        else:
+            return False
+        return proc.returncode == 0
+    except Exception:
+        return False
 
 
 def _get_descendant_pids(pid: int) -> list[int]:
@@ -123,7 +148,10 @@ def capture(
         cmd.extend(["-E", str(end)])
     result = _tmux(*cmd)
     if result.returncode == 0:
-        typer.echo(result.stdout)
+        output = result.stdout
+        typer.echo(output)
+        if _copy_to_clipboard(output):
+            typer.echo("(copied to clipboard)", err=True)
     else:
         typer.echo(f"Failed to capture pane:\n{result.stderr}")
         raise typer.Exit(1)

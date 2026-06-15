@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+import time
 from pathlib import Path
 
 import typer
@@ -78,16 +79,20 @@ def _build_image(config: dict, devcontainer_path: Path, image_tag: str):
     typer.echo("Build complete.")
 
 
-def _running_container(name: str) -> str | None:
+def _container_running(name: str) -> bool:
     result = subprocess.run(
         ["docker", "ps", "--filter", f"name=^{name}$", "--format", "{{.Names}}"],
         capture_output=True, text=True,
     )
-    names = result.stdout.strip().split("\n")
-    for n in names:
-        if n == name:
-            return n
-    return None
+    return name in result.stdout.strip().split("\n")
+
+
+def _container_exists(name: str) -> bool:
+    result = subprocess.run(
+        ["docker", "ps", "-a", "--filter", f"name=^{name}$", "--format", "{{.Names}}"],
+        capture_output=True, text=True,
+    )
+    return name in result.stdout.strip().split("\n")
 
 
 @app.callback(invoke_without_command=True)
@@ -115,25 +120,51 @@ def _start_container(name: str, config: dict, devcontainer_path: Path):
 
     _build_image(config, devcontainer_path, image_tag)
 
+    if _container_exists(name):
+        typer.echo(f"Removing existing container '{name}'...")
+        subprocess.run(["docker", "rm", "-f", name], capture_output=True, text=True)
+
     workspace_folder = config.get("workspaceFolder", "/workspace")
     workspace_mount = Path.cwd()
 
-    typer.echo(f"Starting container '{name}'...")
-    result = subprocess.run([
+    docker_args = [
         "docker", "run", "-d",
         "--name", name,
         "--label", "devcontainer",
         "-w", workspace_folder,
         "-v", f"{workspace_mount}:{workspace_folder}",
-        image_tag,
-        "sleep", "infinity",
-    ], capture_output=True, text=True)
+    ]
+
+    netrc = Path.home() / ".netrc"
+    if netrc.exists():
+        docker_args.extend(["-v", f"{netrc}:/root/.netrc:ro"])
+
+    ssh_sock = os.environ.get("SSH_AUTH_SOCK")
+    if ssh_sock and os.path.exists(ssh_sock):
+        docker_args.extend(["-v", f"{ssh_sock}:{ssh_sock}", "-e", f"SSH_AUTH_SOCK={ssh_sock}"])
+
+    gitconfig = Path.home() / ".gitconfig"
+    if gitconfig.exists():
+        docker_args.extend(["-v", f"{gitconfig}:/root/.gitconfig:ro"])
+
+    docker_args.append(image_tag)
+    docker_args.append("sleep infinity")
+
+    typer.echo(f"Starting container '{name}'...")
+    result = subprocess.run(docker_args, capture_output=True, text=True)
 
     if result.returncode != 0:
         typer.echo(f"Failed to start container:\n{result.stderr}")
         raise typer.Exit(1)
 
-    typer.echo(f"Container '{name}' started.")
+    for _ in range(10):
+        if _container_running(name):
+            typer.echo(f"Container '{name}' started.")
+            return
+        time.sleep(0.5)
+
+    typer.echo(f"Failed to start container:\nContainer exited immediately.")
+    raise typer.Exit(1)
 
 
 def _resolve() -> tuple[dict, str, Path] | None:
@@ -155,7 +186,7 @@ def up():
 
     config, name, devcontainer_path = resolved
 
-    if _running_container(name):
+    if _container_running(name):
         typer.echo(f"Container '{name}' is already running.")
         return
 
@@ -172,12 +203,14 @@ def down():
 
     _, name, _ = resolved
 
-    if not _running_container(name):
-        typer.echo(f"Container '{name}' is not running.")
+    if not _container_exists(name):
+        typer.echo(f"Container '{name}' does not exist.")
         return
 
-    typer.echo(f"Stopping '{name}'...")
-    subprocess.run(["docker", "stop", name], capture_output=True, text=True)
+    if _container_running(name):
+        typer.echo(f"Stopping '{name}'...")
+        subprocess.run(["docker", "stop", name], capture_output=True, text=True)
+
     subprocess.run(["docker", "rm", name], capture_output=True, text=True)
     typer.echo(f"Container '{name}' removed.")
 
@@ -192,7 +225,7 @@ def attach():
 
     _, name, _ = resolved
 
-    if not _running_container(name):
+    if not _container_running(name):
         typer.echo(f"Container '{name}' is not running. Start it with 'omni containers up'.")
         raise typer.Exit(1)
 
@@ -210,11 +243,8 @@ def shell():
 
     config, name, devcontainer_path = resolved
 
-    if not _running_container(name):
+    if not _container_running(name):
         typer.echo(f"Container '{name}' is not running — starting it...")
         _start_container(name, config, devcontainer_path)
-        if not _running_container(name):
-            typer.echo("Failed to start container.")
-            raise typer.Exit(1)
 
     os.execvp("docker", ["docker", "exec", "-it", name, "/bin/bash"])
