@@ -1,4 +1,5 @@
 import os
+import signal
 import subprocess
 from typing import Optional
 
@@ -16,6 +17,66 @@ def main(ctx: typer.Context):
 
 def _tmux(*args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["tmux", *args], capture_output=True, text=True)
+
+
+def _get_descendant_pids(pid: int) -> list[int]:
+    """Recursively find all descendant PIDs of a given PID using ps."""
+    try:
+        result = subprocess.run(
+            ["ps", "-eo", "ppid,pid"], capture_output=True, text=True
+        )
+        if result.returncode != 0:
+            return []
+
+        children: dict[int, list[int]] = {}
+        for line in result.stdout.strip().split("\n")[1:]:
+            parts = line.strip().split()
+            if len(parts) == 2:
+                ppid = int(parts[0])
+                child = int(parts[1])
+                children.setdefault(ppid, []).append(child)
+
+        descendants: list[int] = []
+        stack = [pid]
+        while stack:
+            p = stack.pop()
+            for child in children.get(p, []):
+                descendants.append(child)
+                stack.append(child)
+        return descendants
+    except Exception:
+        return []
+
+
+@app.command(name="kill-all")
+def kill_all():
+    """Kill all tmux sessions, forcefully terminating every pane process."""
+    result = _tmux("list-panes", "-a", "-F", "#{pane_pid}")
+    if result.returncode == 0 and result.stdout.strip():
+        killed: set[int] = set()
+        for pid_str in result.stdout.strip().split("\n"):
+            pid_str = pid_str.strip()
+            if not pid_str:
+                continue
+            try:
+                pid = int(pid_str)
+            except ValueError:
+                continue
+
+            descendants = _get_descendant_pids(pid)
+            for p in descendants + [pid]:
+                if p not in killed:
+                    try:
+                        os.kill(p, signal.SIGKILL)
+                        killed.add(p)
+                    except ProcessLookupError:
+                        pass
+
+    result = _tmux("kill-server")
+    if result.returncode == 0:
+        typer.echo("All tmux sessions closed and all processes killed.")
+    else:
+        typer.echo("No tmux server running.")
 
 
 @app.command()
