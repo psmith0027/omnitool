@@ -2,6 +2,7 @@ import os
 import platform
 import signal
 import subprocess
+from importlib import resources
 from typing import Optional
 
 import typer
@@ -157,6 +158,13 @@ def capture(
         raise typer.Exit(1)
 
 
+@app.command(name="default-config")
+def default_config():
+    """Print the default tmux configuration bundled with omnitool."""
+    config = resources.read_text("omnitool.configs", "tmux.conf")
+    typer.echo(config)
+
+
 @app.command()
 def new(
     session: str = typer.Argument(
@@ -168,6 +176,7 @@ def new(
     """Create a new tmux session with a predefined layout."""
     _tmux("kill-session", "-t", session)
     _tmux("new-session", "-d", "-s", session, "-n", "main", "-c", path)
+    _tmux("source-file", str(resources.files("omnitool.configs").joinpath("tmux.conf")))
     _tmux("split-window", "-h", "-p", "30", "-t", f"{session}:main", "-c", path)
     _tmux("split-window", "-v", "-p", "25", "-t", f"{session}:main.1", "-c", path)
     _tmux("select-pane", "-t", f"{session}:main.0")
